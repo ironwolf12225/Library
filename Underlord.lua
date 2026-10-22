@@ -1,4 +1,4 @@
-local Underlord = { version = "2.1.0" }
+local Underlord = { version = "2.1.1" }
 
 local HttpService = game:GetService("HttpService")
 
@@ -29,6 +29,7 @@ local defaults = {
 	muted = Color3.fromRGB(139, 139, 139),
 	outline = Color3.fromRGB(130, 130, 130),
 	font = Enum.Font.Code,
+	headerFont = Enum.Font.SourceSans,
 	textSize = 13,
 	hoverDuration = 0.14,
 	fadeOutDuration = 0.09,
@@ -122,6 +123,8 @@ local function label(window, parent, text, properties)
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Font = window.theme.font,
+		AutoLocalize = false,
+		TextScaled = false,
 		Text = text,
 		TextColor3 = window.theme.text,
 		TextSize = window.theme.textSize,
@@ -145,6 +148,8 @@ local function button(window, parent, text, properties)
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Font = window.theme.font,
+		AutoLocalize = false,
+		TextScaled = false,
 		Text = text,
 		TextColor3 = window.theme.text,
 		TextSize = window.theme.textSize,
@@ -466,8 +471,8 @@ local function buildHeader(window, options)
 	local header = frame(window.root, "Header", { Size = UDim2.new(1, 0, 0, 40), Active = true })
 	local title = button(window, header, "", {
 		Name = "Title", TextXAlignment = Enum.TextXAlignment.Left,
-		Position = UDim2.fromOffset(8, -1), Size = UDim2.fromOffset(300, 38),
-		Font = Enum.Font.SourceSans, TextSize = 32, TextTruncate = Enum.TextTruncate.None,
+		Position = UDim2.fromOffset(8, 0), Size = UDim2.new(0.5, -96, 0, 38),
+		Font = window.theme.headerFont, TextSize = 32, RichText = true, ClipsDescendants = true,
 	})
 	window.titlePrefix = options.titlePrefix or "UNDER"
 	window.titleAccent = options.titleAccent or "LORD"
@@ -475,13 +480,14 @@ local function buildHeader(window, options)
 	window.titleVersion = options.version or "v3.1.5"
 	window.navigation = create("ScrollingFrame", header, {
 		Name = "Navigation", BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 0,
+		ClipsDescendants = true,
 		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X, ScrollingDirection = Enum.ScrollingDirection.X,
 		AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 7), Size = UDim2.fromOffset(160, 27),
 	})
 	create("UIListLayout", window.navigation, { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6) })
 	window.clock = label(window, header, "", {
 		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 2),
-		Size = UDim2.fromOffset(110, 35), Font = Enum.Font.SourceSans, TextSize = 16,
+		Size = UDim2.fromOffset(110, 35), Font = window.theme.headerFont, TextSize = 16,
 		TextXAlignment = Enum.TextXAlignment.Right,
 	})
 	local divider = frame(header, "Divider", { Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1),
@@ -520,9 +526,9 @@ local function buildWindow(window, parent, options)
 	})
 	window.scale = create("UIScale", window.host, { Scale = window.theme.scale })
 	shadow(window.host, 22, 7, 3, 0.25)
-	window.root = create("CanvasGroup", window.host, {
+	window.root = frame(window.host, "Window", {
 		Name = "Window", BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = window.theme.background, GroupTransparency = 0,
+		BackgroundColor3 = window.theme.background, BackgroundTransparency = 0,
 	})
 	window.popupLayer = frame(window.host, "PopupLayer", { Size = UDim2.fromScale(1, 1), ZIndex = 300 })
 	window.visibilityCover = button(window, window.root, "", {
@@ -553,8 +559,9 @@ end
 local function createField(window, parent, width, text)
 	local field = create("TextBox", parent, {
 		Name = "Input", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -1, 0.5, 0),
-		Size = UDim2.fromOffset(width, 19), BackgroundTransparency = 1, BorderSizePixel = 0,
+		Size = UDim2.fromOffset(width, 18), BackgroundTransparency = 1, BorderSizePixel = 0,
 		Font = window.theme.font, TextColor3 = window.theme.text, TextSize = window.theme.textSize,
+		AutoLocalize = false, TextScaled = false,
 		Text = text, ClearTextOnFocus = false,
 	})
 	round(field, 2)
@@ -604,7 +611,7 @@ local function createKeybindView(section, options)
 	local width = options.width or 84
 	label(window, row, options.name or "Keybind", { Size = UDim2.new(1, -width - 6, 1, 0) })
 	local control = button(window, row, "", { Name = "Keybind", AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -1, 0.5, 0), Size = UDim2.fromOffset(width, 19) })
+		Position = UDim2.new(1, -1, 0.5, 0), Size = UDim2.fromOffset(width, 18) })
 	round(control, 2)
 	local border = outline(control, window.theme.outline)
 	textHover(window, control, border)
@@ -792,7 +799,7 @@ local function createDropdownPanel(section, options)
 	local window = section.window
 	local row = createRow(section, 44)
 	label(window, row, options.name or "Dropdown", { Size = UDim2.new(1, 0, 0, 19) })
-	local control = button(window, row, "", { Name = "Dropdown", Position = UDim2.fromOffset(0, 23), Size = UDim2.new(1, 0, 0, 19) })
+	local control = button(window, row, "", { Name = "Dropdown", Position = UDim2.fromOffset(1, 23), Size = UDim2.new(1, -2, 0, 19) })
 	outline(control, window.theme.outline)
 	local caption = label(window, control, "", { Position = UDim2.fromOffset(4, 0), Size = UDim2.new(1, -26, 1, 0), TextXAlignment = Enum.TextXAlignment.Center })
 	local arrow = createIcon(window, control, "chevron-down", 14)
@@ -1058,7 +1065,9 @@ end
 Section.addButton = function(self, options)
 	local window = self.window
 	local row = createRow(self, 19)
-	local control = button(window, row, options.name or "Button", { Name = "Action" })
+	local control = button(window, row, options.name or "Button", {
+		Name = "Action", Position = UDim2.fromOffset(1, 1), Size = UDim2.new(1, -2, 1, -2),
+	})
 	round(control, 2)
 	outline(control, window.theme.outline)
 	textHover(window, control)
