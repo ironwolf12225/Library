@@ -1,4 +1,4 @@
-local Underlord = { version = "2.2.0" }
+local Underlord = { version = "2.2.1" }
 
 local HttpService = game:GetService("HttpService")
 
@@ -16,7 +16,7 @@ Section.__index = Section
 
 local defaults = {
 	size = Vector2.new(780, 470),
-	scale = 0.5,
+	scale = 0.95,
 	dragDuration = 0.10,
 	tintDuration = 0.08,
 	slideDuration = 0.20,
@@ -598,16 +598,15 @@ end
 local function createToggleView(section, options)
 	local window = section.window
 	local row = createRow(section)
-	local control = button(window, row, "", { Name = "Toggle" })
-	local caption = label(window, control, options.name or "Toggle", { Size = UDim2.new(1, -26, 1, 0) })
-	local box = frame(control, "Checkbox", { AnchorPoint = Vector2.new(1, 0.5),
+	label(window, row, options.name or "Toggle", { Size = UDim2.new(1, -26, 1, 0), Active = false })
+	local control = button(window, row, "", { Name = "Toggle", AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, -1, 0.5, 0), Size = UDim2.fromOffset(18, 18),
 		BackgroundColor3 = window.theme.accent })
-	round(box, 4)
-	local border = outline(box, window.theme.outline)
-	local check = label(window, box, "✓", { Font = Enum.Font.SourceSansBold, TextSize = 19,
+	round(control, 4)
+	local border = outline(control, window.theme.outline)
+	local check = label(window, control, "✓", { Font = Enum.Font.SourceSansBold, TextSize = 19,
 		TextColor3 = Color3.fromRGB(40, 19, 23), TextXAlignment = Enum.TextXAlignment.Center, TextTransparency = 1 })
-	return control, caption, box, border, check
+	return control, border, check
 end
 
 local function createKeybindView(section, options)
@@ -1117,11 +1116,11 @@ end
 
 Section.addToggle = function(self, options)
 	local window = self.window
-	local control, caption, box, border, check = createToggleView(self, options)
+	local control, border, check = createToggleView(self, options)
 	local isEnabled, isHovered = options.default == true, false
 	local function refresh()
 		animate(window, border, { Color = (isEnabled or isHovered) and window.theme.accent or window.theme.outline })
-		animate(window, box, { BackgroundTransparency = isEnabled and 0 or 1 })
+		animate(window, control, { BackgroundTransparency = isEnabled and 0 or 1 })
 		animate(window, check, { TextTransparency = isEnabled and 0 or 1 })
 	end
 	local handle = { instance = control }
