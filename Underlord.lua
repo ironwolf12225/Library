@@ -1,4 +1,4 @@
-local Underlord = { version = "2.1.1" }
+local Underlord = { version = "2.2.0" }
 
 local HttpService = game:GetService("HttpService")
 
@@ -258,7 +258,7 @@ local function refreshTab(tab)
 end
 
 local function closePopup(window, shouldHideImmediately)
-	local view = window.activeDropdown
+	local view = window.activePopup
 	if window.closePopup then
 		window.closePopup()
 		window.closePopup = nil
@@ -378,13 +378,13 @@ local function containsPoint(instance, position)
 		and position.X <= origin.X + size.X and position.Y <= origin.Y + size.Y
 end
 
-local function placeDropdown(window, view)
+local function placePopup(window, view)
 	if not view.shell.Parent then return end
 	local scale = window.scale.Scale
 	local origin = view.control.AbsolutePosition
 	local viewportOrigin = window.viewport.AbsolutePosition
 	local viewport = window.viewport.AbsoluteSize
-	local width = view.control.AbsoluteSize.X / scale
+	local width = view.width or view.control.AbsoluteSize.X / scale
 	local height = view.listHeight
 	local left = math.clamp(origin.X - viewportOrigin.X, 2, math.max(2, viewport.X - width * scale - 2))
 	local below = origin.Y - viewportOrigin.Y + view.control.AbsoluteSize.Y + scale
@@ -393,39 +393,51 @@ local function placeDropdown(window, view)
 	top = math.clamp(top, 2, math.max(2, viewport.Y - height * scale - 2))
 	local hostOrigin = window.host.AbsolutePosition - viewportOrigin
 	view.shell.Position = UDim2.fromOffset((left - hostOrigin.X) / scale, (top - hostOrigin.Y) / scale)
-	view.shell.Size = UDim2.fromOffset(width, height)
+	view.targetSize = UDim2.fromOffset(width, height)
+	if not view.isAnimating then view.shell.Size = view.targetSize end
 end
 
-local function dropdownAnimation(window, view)
+local function popupAnimation(window, view)
 	local revision = 0
 	return function(shouldOpen)
 		revision = revision + 1
 		local currentRevision = revision
 		if not view.shell.Parent then return end
 		if shouldOpen then
-			placeDropdown(window, view)
+			placePopup(window, view)
+			if not view.shell.Visible then
+				view.shell.Size = UDim2.fromOffset(view.targetSize.X.Offset, 0)
+			end
 			view.shell.Visible = true
-			window.activeDropdown = view
+			window.activePopup = view
 			window.popupOrder = (window.popupOrder or 0) + 1
 			view.shell.ZIndex = window.popupOrder
-		elseif window.activeDropdown == view then
-			window.activeDropdown = nil
+		elseif window.activePopup == view then
+			window.activePopup = nil
 		end
-		view.scroll.Active = shouldOpen
-		view.scroll.ScrollingEnabled = shouldOpen
+		if view.scroll then
+			view.scroll.Active = shouldOpen
+			view.scroll.ScrollingEnabled = shouldOpen
+		end
 		view.blocker.Visible = not shouldOpen
-		animate(window, view.arrow, { Rotation = shouldOpen and 180 or 0 })
-		local tween = animate(window, view.list, { GroupTransparency = shouldOpen and 0 or 1 }, window.theme.popupDuration)
+		if view.arrow then animate(window, view.arrow, { Rotation = shouldOpen and 180 or 0 }) end
+		view.isAnimating = true
+		animate(window, view.list, { GroupTransparency = shouldOpen and 0 or 1 }, window.theme.popupDuration)
+		local target = shouldOpen and view.targetSize or UDim2.fromOffset(view.shell.Size.X.Offset, 0)
+		local tween = animate(window, view.shell, { Size = target }, window.theme.popupDuration, Enum.EasingStyle.Quart)
 		task.spawn(function()
 			tween.Completed:Wait()
-			if not window.isDestroyed and revision == currentRevision and view.shell.Parent then view.shell.Visible = shouldOpen end
+			if window.isDestroyed or revision ~= currentRevision or not view.shell.Parent then return end
+			view.isAnimating = false
+			view.shell.Visible = shouldOpen
+			if shouldOpen then placePopup(window, view) end
 		end)
 	end
 end
 
-local function bindDropdownPosition(window, view)
+local function bindPopupPosition(window, view)
 	local function refresh()
-		if window.activeDropdown == view then placeDropdown(window, view) end
+		if window.activePopup == view then placePopup(window, view) end
 	end
 	connect(window, view.control:GetPropertyChangedSignal("AbsolutePosition"), refresh)
 	connect(window, view.control:GetPropertyChangedSignal("AbsoluteSize"), refresh)
@@ -440,9 +452,9 @@ local function bindInput(window)
 	end)
 	connect(window, UserInputService.WindowFocusReleased, function() window.pointer = nil end)
 	connect(window, UserInputService.InputBegan, function(input, isProcessed)
-		if isPointer(input) and window.activeDropdown then
+		if isPointer(input) and window.activePopup then
 			local position = Vector2.new(input.Position.X, input.Position.Y)
-			local view = window.activeDropdown
+			local view = window.activePopup
 			if not containsPoint(view.shell, position) and not containsPoint(view.control, position) then closePopup(window) end
 		end
 		if UserInputService:GetFocusedTextBox() then return end
@@ -501,13 +513,6 @@ local function buildHeader(window, options)
 	})
 	bindDrag(window, header)
 	bindDrag(window, title)
-	local lastClick = -math.huge
-	connect(window, title.Activated, function()
-		if window.hasDragged then lastClick = -math.huge; return end
-		local now = os.clock()
-		if now - lastClick <= 0.28 then window:setMinimized(not window.isMinimized) end
-		lastClick = now
-	end)
 	updateClock(window)
 end
 
@@ -636,6 +641,19 @@ local function releaseConnections(window, connections)
 	local owner = connections.owner
 	table.clear(connections)
 	connections.owner = owner
+end
+
+local function destroyPopup(window, view, handle)
+	if window.activePopup == view then window.activePopup = nil end
+	if window.closePopup == handle.close then window.closePopup = nil end
+	if view.connections then releaseConnections(window, view.connections) end
+	for instance, tween in pairs(window.tweens) do
+		if instance == view.shell or instance:IsDescendantOf(view.shell) then
+			tween:Cancel()
+			window.tweens[instance], window.targets[instance] = nil, nil
+		end
+	end
+	view.shell:Destroy()
 end
 
 local function escapeRichText(text)
@@ -800,15 +818,18 @@ local function createDropdownPanel(section, options)
 	local row = createRow(section, 44)
 	label(window, row, options.name or "Dropdown", { Size = UDim2.new(1, 0, 0, 19) })
 	local control = button(window, row, "", { Name = "Dropdown", Position = UDim2.fromOffset(1, 23), Size = UDim2.new(1, -2, 0, 19) })
+	round(control, 4)
 	outline(control, window.theme.outline)
 	local caption = label(window, control, "", { Position = UDim2.fromOffset(4, 0), Size = UDim2.new(1, -26, 1, 0), TextXAlignment = Enum.TextXAlignment.Center })
 	local arrow = createIcon(window, control, "chevron-down", 14)
 	arrow.Position = UDim2.new(1, -18, 0.5, -7)
-	local shell = frame(window.popupLayer, "DropdownPopup", { Size = UDim2.fromOffset(230, 162), Visible = false })
+	local shell = frame(window.popupLayer, "DropdownPopup", { Size = UDim2.fromOffset(230, 162), Visible = false, ClipsDescendants = true })
+	round(shell, 5)
 	shadow(shell, 8, 3, 1, 0.25)
 	outline(shell, window.theme.outline)
 	local list = create("CanvasGroup", shell, { Name = "Choices", Size = UDim2.fromScale(1, 1),
 		BackgroundColor3 = window.theme.panel, BorderSizePixel = 0, GroupTransparency = 1 })
+	round(list, 5)
 	local search = createField(window, list, 180, "")
 	search.Name, search.PlaceholderText = "Search", "Search..."
 	search.AnchorPoint, search.Position, search.Size = Vector2.new(0, 0), UDim2.fromOffset(2, 2), UDim2.new(1, -4, 0, 20)
@@ -851,7 +872,7 @@ local function refreshDropdown(window, view, selected, isMulti)
 		refreshChoice(window, entry)
 	end
 	view.listHeight = math.min(math.max(visibleCount, 1), view.maxVisible) * 20 + view.top + 1
-	if window.activeDropdown == view then placeDropdown(window, view) end
+	if window.activePopup == view then placePopup(window, view) end
 end
 
 local function rebuildChoices(window, view, choices, onSelect)
@@ -882,8 +903,18 @@ local function createColorPanel(section, options)
 	local swatch = frame(control, "Swatch", { Position = UDim2.new(1, -29, 0, 2), Size = UDim2.fromOffset(28, 16), BackgroundTransparency = 0 })
 	round(swatch, 2)
 	outline(swatch, window.theme.outline)
-	local panel = create("CanvasGroup", row, { Name = "Picker", Position = UDim2.fromOffset(0, 26),
-		Size = UDim2.new(1, 0, 0, 142), BackgroundTransparency = 1, Visible = false, GroupTransparency = 1 })
+	local shell = frame(window.popupLayer, "ColorPopup", {
+		Size = UDim2.fromOffset(230, 158), Visible = false, ClipsDescendants = true,
+	})
+	round(shell, 5)
+	shadow(shell, 8, 3, 1, 0.25)
+	outline(shell, window.theme.outline)
+	local list = create("CanvasGroup", shell, { Name = "Picker", Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = window.theme.panel, BorderSizePixel = 0, GroupTransparency = 1 })
+	round(list, 5)
+	local panel = frame(list, "Content", {
+		Position = UDim2.fromOffset(8, 8), Size = UDim2.new(1, -16, 0, 142),
+	})
 	local saturation = button(window, panel, "", { Name = "Saturation", Size = UDim2.new(1, -24, 0, 110), BackgroundTransparency = 0, BackgroundColor3 = Color3.new(1, 1, 1) })
 	create("UIGradient", saturation, { Color = ColorSequence.new(Color3.new(1, 1, 1)), Transparency = NumberSequence.new(0, 1) })
 	local hueBase = frame(panel, "HueBase", { Size = saturation.Size, BackgroundTransparency = 0, ZIndex = 0 })
@@ -900,7 +931,10 @@ local function createColorPanel(section, options)
 	local hueMarker = frame(hue, "Cursor", { Size = UDim2.new(1, 4, 0, 2), Position = UDim2.fromOffset(-2, 0), BackgroundTransparency = 0, BackgroundColor3 = Color3.new(1, 1, 1) })
 	local hex = createField(window, panel, 90, "")
 	hex.Position = UDim2.new(1, -1, 0, 129)
-	return { row = row, control = control, swatch = swatch, panel = panel, saturation = saturation, hueBase = hueBase, marker = marker, hue = hue, hueMarker = hueMarker, hex = hex }
+	local blocker = button(window, list, "", { Name = "ClosingBlocker", ZIndex = 100, Visible = true, Selectable = false })
+	return { row = row, control = control, swatch = swatch, panel = panel, shell = shell, list = list,
+		blocker = blocker, width = 230, listHeight = 158, saturation = saturation, hueBase = hueBase,
+		marker = marker, hue = hue, hueMarker = hueMarker, hex = hex }
 end
 
 local function refreshColor(window, view, color)
@@ -1186,7 +1220,7 @@ Section.addDropdown = function(self, options)
 	local isMulti = options.isMulti == true
 	local selected = isMulti and {} or (choices[1] or "")
 	local isOpen = false
-	local animateOpen = dropdownAnimation(window, view)
+	local animateOpen = popupAnimation(window, view)
 	local handle = { instance = view.control }
 	view.connections.owner = handle
 	function handle:get() return isMulti and table.clone(selected) or selected end
@@ -1246,15 +1280,10 @@ Section.addDropdown = function(self, options)
 	end)
 	connect(window, view.search:GetPropertyChangedSignal("Text"), function() refreshDropdown(window, view, selected, isMulti) end)
 	local function cleanup()
-		if window.activeDropdown == view then window.activeDropdown = nil end
-		if window.closePopup == handle.close then window.closePopup = nil end
-		releaseConnections(window, view.connections)
-		local tween = window.tweens[view.list]
-		if tween then tween:Cancel(); window.tweens[view.list] = nil end
-		view.shell:Destroy()
+		destroyPopup(window, view, handle)
 	end
 	connect(window, view.control.Destroying, cleanup)
-	bindDropdownPosition(window, view)
+	bindPopupPosition(window, view)
 	bindHover(window, view.control, function(isHovered)
 		animate(window, view.caption, { TextColor3 = isHovered and window.theme.accent or window.theme.text })
 	end)
@@ -1439,7 +1468,7 @@ Tab.setName = function(self, name)
 end
 
 Section.setVisible = function(self, isVisible)
-	local popup = self.window.activeDropdown
+	local popup = self.window.activePopup
 	if not isVisible and popup and popup.control:IsDescendantOf(self.frame) then closePopup(self.window, true) end
 	self.frame.Visible = isVisible == true
 end
@@ -1469,6 +1498,7 @@ Section.addColorPicker = function(self, options)
 	assert(typeof(selected) == "Color3", "Color3 attendu.")
 	local view = createColorPanel(self, options)
 	local isOpen = false
+	local animateOpen = popupAnimation(window, view)
 	local handle = { instance = view.control }
 	function handle:get() return selected end
 	function handle:set(color, shouldNotify)
@@ -1480,9 +1510,11 @@ Section.addColorPicker = function(self, options)
 	end
 	local function setOpen(shouldOpen)
 		isOpen = shouldOpen
-		view.panel.Visible = true
-		animate(window, view.row, { Size = UDim2.new(1, -2, 0, isOpen and 172 or 20) })
-		animate(window, view.panel, { GroupTransparency = isOpen and 0 or 1 })
+		animateOpen(shouldOpen)
+		if not shouldOpen then
+			window.pointer = nil
+			view.hex:ReleaseFocus()
+		end
 	end
 	handle.close = function() setOpen(false) end
 	connect(window, view.control.Activated, function()
@@ -1495,6 +1527,9 @@ Section.addColorPicker = function(self, options)
 		if hex:match("^%x%x%x%x%x%x$") then handle:set(Color3.fromHex(hex)) else refreshColor(window, view, selected) end
 	end)
 	bindColorPointer(window, view, handle)
+	bindPopupPosition(window, view)
+	handle.cleanup = function() destroyPopup(window, view, handle) end
+	connect(window, view.control.Destroying, handle.cleanup)
 	handle:set(selected, false)
 	return handle
 end
