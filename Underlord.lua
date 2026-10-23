@@ -1,6 +1,7 @@
-local Underlord = { version = "2.2.1" }
+local Underlord = { version = "2.3.0" }
 
 local HttpService = game:GetService("HttpService")
+local TextService = game:GetService("TextService")
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -258,6 +259,7 @@ local function refreshTab(tab)
 end
 
 local function closePopup(window, shouldHideImmediately)
+	if window.hideTooltip then window.hideTooltip() end
 	local view = window.activePopup
 	if window.closePopup then
 		window.closePopup()
@@ -561,14 +563,28 @@ local function createRow(section, height)
 	return row
 end
 
-local function createField(window, parent, width, text)
+local function limitText(text, maximum)
+	text = tostring(text):gsub("[%c]", "")
+	local length = utf8.len(text)
+	if not length then return "" end
+	if length <= maximum then return text end
+	return text:sub(1, utf8.offset(text, maximum + 1) - 1)
+end
+
+local function createField(window, parent, width, text, maxLength)
+	maxLength = maxLength or 256
 	local field = create("TextBox", parent, {
 		Name = "Input", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -1, 0.5, 0),
 		Size = UDim2.fromOffset(width, 18), BackgroundTransparency = 1, BorderSizePixel = 0,
 		Font = window.theme.font, TextColor3 = window.theme.text, TextSize = window.theme.textSize,
 		AutoLocalize = false, TextScaled = false,
-		Text = text, ClearTextOnFocus = false,
+		Text = limitText(text, maxLength), ClearTextOnFocus = false, MultiLine = false, TextWrapped = false,
 	})
+	field:SetAttribute("MaxLength", maxLength)
+	connect(window, field:GetPropertyChangedSignal("Text"), function()
+		local limited = limitText(field.Text, maxLength)
+		if field.Text ~= limited then field.Text = limited end
+	end)
 	round(field, 2)
 	local border = outline(field, window.theme.outline)
 	connect(window, field.Focused, function() animate(window, border, { Color = window.theme.accent }) end)
@@ -592,7 +608,7 @@ local function createSliderView(section, options)
 		Position = UDim2.fromScale(0, 0.5), Size = UDim2.fromOffset(13, 13),
 		BackgroundTransparency = 0, BackgroundColor3 = window.theme.accent })
 	round(knob, 100)
-	return hitbox, knob, createField(window, row, fieldWidth, "0"), fill
+	return hitbox, knob, createField(window, row, fieldWidth, "0", 24), fill
 end
 
 local function createToggleView(section, options)
@@ -623,6 +639,7 @@ local function createKeybindView(section, options)
 end
 
 local function schedule(window, delaySeconds, callback)
+	if window.isDestroyed then return nil end
 	local thread
 	thread = task.delay(delaySeconds, function()
 		window.tasks[thread] = nil
@@ -666,30 +683,91 @@ local function refreshTitle(window)
 		math.round(accent.B * 255), escapeRichText(window.titleAccent), escapeRichText(window.titleVersion))
 end
 
+local function cancelScheduled(window, thread)
+	if not thread then return end
+	window.tasks[thread] = nil
+	task.cancel(thread)
+end
+
+local function destroyOverlay(window, shell)
+	for instance, tween in pairs(window.tweens) do
+		if instance == shell or instance:IsDescendantOf(shell) then
+			tween:Cancel()
+			window.tweens[instance], window.targets[instance] = nil, nil
+		end
+	end
+	shell:Destroy()
+end
+
+local function measureText(window, text, width, maximum)
+	local bounds = TextService:GetTextSize(text, 12, window.theme.font, Vector2.new(math.max(1, width), 10000))
+	return math.clamp(bounds.Y, 16, maximum)
+end
+
+local function overlayCard(window, parent, name, size, layer)
+	local shell = frame(parent, name, { Size = size, ZIndex = layer or 1 })
+	round(shell, 5)
+	shadow(shell, 10, 3, 1, 0.35)
+	local panel = create("CanvasGroup", shell, {
+		Name = "Content", Size = UDim2.fromScale(1, 1), BorderSizePixel = 0,
+		BackgroundColor3 = window.theme.panel, GroupTransparency = 1,
+	})
+	round(panel, 5)
+	outline(shell, Color3.fromRGB(49, 49, 53))
+	return shell, panel
+end
+
+local function tooltipPosition(window, target, width, height)
+	local viewport = window.viewport.AbsoluteSize
+	local origin = target.AbsolutePosition - window.viewport.AbsolutePosition
+	local top = origin.Y + target.AbsoluteSize.Y + 7
+	if top + height > viewport.Y - 8 then top = origin.Y - height - 7 end
+	return UDim2.fromOffset(math.clamp(origin.X, 8, math.max(8, viewport.X - width - 8)),
+		math.clamp(top, 8, math.max(8, viewport.Y - height - 8)))
+end
+
+local function createTooltip(window, target, text)
+	local width = math.max(48, math.min(250, window.viewport.AbsoluteSize.X - 16))
+	local height = measureText(window, text, width - 20, 96) + 16
+	local shell, panel = overlayCard(window, window.viewport, "Tooltip", UDim2.fromOffset(width, height), 400)
+	label(window, panel, text, { Position = UDim2.fromOffset(10, 8), Size = UDim2.new(1, -20, 1, -16),
+		TextWrapped = true, TextSize = 12, TextYAlignment = Enum.TextYAlignment.Top })
+	local position = tooltipPosition(window, target, width, height)
+	shell.Position = UDim2.fromOffset(position.X.Offset, position.Y.Offset + 4)
+	animate(window, shell, { Position = position }, 0.12)
+	animate(window, panel, { GroupTransparency = 0 }, 0.12)
+	return shell, panel
+end
+
 local function addTooltip(window, target, text)
-	local tooltip
-	local revision = 0
+	local shell, panel, pending
 	local function hide()
-		revision = revision + 1
-		if tooltip then tooltip:Destroy(); tooltip = nil end
+		cancelScheduled(window, pending)
+		pending = nil
+		if shell then
+			local previous = shell
+			animate(window, panel, { GroupTransparency = 1 }, 0.10)
+			schedule(window, 0.10, function() destroyOverlay(window, previous) end)
+			shell, panel = nil, nil
+		end
 	end
 	bindHover(window, target, function(isHovered)
 		hide()
 		if not isHovered then return end
-		local currentRevision = revision
-		schedule(window, 0.35, function()
-			if revision ~= currentRevision or not target.Parent or not window.isVisible then return end
-			tooltip = label(window, window.viewport, text, {
-				Name = "Tooltip", BackgroundTransparency = 0, BackgroundColor3 = window.theme.panel,
-				Size = UDim2.fromOffset(240, 40), TextWrapped = true, TextSize = 12, ZIndex = 300,
-				TextXAlignment = Enum.TextXAlignment.Center, BorderSizePixel = 0,
-			})
-			local position = target.AbsolutePosition - window.viewport.AbsolutePosition
-			tooltip.Position = UDim2.fromOffset(math.clamp(position.X, 0, math.max(0, window.viewport.AbsoluteSize.X - 240)),
-				math.clamp(position.Y + target.AbsoluteSize.Y + 5, 0, math.max(0, window.viewport.AbsoluteSize.Y - 40)))
-			outline(tooltip, window.theme.outline)
+		if window.hideTooltip then window.hideTooltip() end
+		window.hideTooltip = hide
+		pending = schedule(window, 0.3, function()
+			pending = nil
+			if not window.isVisible or not target.Parent or window.isTransitioning then return end
+			local ancestor = target
+			while ancestor and ancestor ~= window.gui do
+				if ancestor:IsA("GuiObject") and not ancestor.Visible then return end
+				ancestor = ancestor.Parent
+			end
+			shell, panel = createTooltip(window, target, limitText(text, 320))
 		end)
 	end)
+	connect(window, target:GetPropertyChangedSignal("AbsolutePosition"), hide)
 	connect(window, target.Destroying, hide)
 	return hide
 end
@@ -714,6 +792,7 @@ local function attachControl(section, handle, options, kind, connections)
 		if self.isDestroyed then return end
 		self.isEnabled = isEnabled == true
 		self.blocker.Visible = not self.isEnabled
+		if self.hideTooltip then self.hideTooltip() end
 		if not self.isEnabled and self.close then self.close() end
 		if self.binding then self.binding.isDisabled = not self.isEnabled end
 		if not self.isEnabled and window.captureOwner == self.instance and window.cancelKeyCapture then window.cancelKeyCapture() end
@@ -806,6 +885,9 @@ local function decodeSetting(handle, setting)
 	end
 	if kind == "input" then
 		assert(type(setting) == "string", "Texte attendu.")
+		local length = utf8.len(setting)
+		assert(length and length >= (handle.options.minLength or 0) and length <= (handle.options.maxLength or 64), "Longueur de texte invalide.")
+		assert(limitText(setting, handle.options.maxLength or 64) == setting, "Caractères de contrôle refusés.")
 		assert(not handle.options.validate or handle.options.validate(setting), "Texte refusé.")
 	end
 	if kind == "dropdown" then assert(handle:accepts(setting), "Sélection invalide.") end
@@ -829,7 +911,7 @@ local function createDropdownPanel(section, options)
 	local list = create("CanvasGroup", shell, { Name = "Choices", Size = UDim2.fromScale(1, 1),
 		BackgroundColor3 = window.theme.panel, BorderSizePixel = 0, GroupTransparency = 1 })
 	round(list, 5)
-	local search = createField(window, list, 180, "")
+	local search = createField(window, list, 180, "", 64)
 	search.Name, search.PlaceholderText = "Search", "Search..."
 	search.AnchorPoint, search.Position, search.Size = Vector2.new(0, 0), UDim2.fromOffset(2, 2), UDim2.new(1, -4, 0, 20)
 	search.Visible = options.searchable == true
@@ -928,7 +1010,7 @@ local function createColorPanel(section, options)
 	for index = 0, 6 do table.insert(stops, ColorSequenceKeypoint.new(index / 6, Color3.fromHSV(index / 6, 1, 1))) end
 	create("UIGradient", hue, { Rotation = 90, Color = ColorSequence.new(stops) })
 	local hueMarker = frame(hue, "Cursor", { Size = UDim2.new(1, 4, 0, 2), Position = UDim2.fromOffset(-2, 0), BackgroundTransparency = 0, BackgroundColor3 = Color3.new(1, 1, 1) })
-	local hex = createField(window, panel, 90, "")
+	local hex = createField(window, panel, 90, "", 7)
 	hex.Position = UDim2.new(1, -1, 0, 129)
 	local blocker = button(window, list, "", { Name = "ClosingBlocker", ZIndex = 100, Visible = true, Selectable = false })
 	return { row = row, control = control, swatch = swatch, panel = panel, shell = shell, list = list,
@@ -1294,19 +1376,25 @@ end
 
 Section.addInput = function(self, options)
 	local window = self.window
+	local maximum, minimum = options.maxLength or 64, options.minLength or 0
+	assert(type(maximum) == "number" and maximum % 1 == 0 and maximum >= 1 and maximum <= 32768, "maxLength doit être compris entre 1 et 32768.")
+	assert(type(minimum) == "number" and minimum % 1 == 0 and minimum >= 0 and minimum <= maximum, "minLength invalide.")
+	local initial = limitText(options.default or "", maximum)
+	assert(utf8.len(initial) >= minimum and (not options.validate or options.validate(initial)), "Texte initial invalide.")
 	local row = createRow(self)
 	local width = options.width or 110
 	label(window, row, options.name or "Input", { Size = UDim2.new(1, -width - 6, 1, 0) })
-	local field = createField(window, row, width, options.default or "")
+	local field = createField(window, row, width, initial, maximum)
 	field.PlaceholderText = options.placeholder or ""
 	local committed = field.Text
 	local handle = { instance = field }
 	function handle:set(text, shouldNotify)
-		text = tostring(text):sub(1, options.maxLength or 256)
-		if options.validate and not options.validate(text) then field.Text = committed; return end
+		text = limitText(text, maximum)
+		if utf8.len(text) < minimum or (options.validate and not options.validate(text)) then field.Text = committed; return false end
 		local hasChanged = text ~= committed
 		committed, field.Text = text, text
 		if hasChanged and shouldNotify ~= false then dispatch(options.callback, text) end
+		return true
 	end
 	function handle:get() return committed end
 	connect(window, field.FocusLost, function() handle:set(field.Text) end)
@@ -1429,36 +1517,96 @@ Window.setTitle = function(self, prefix, accentText, version)
 	refreshTitle(self)
 end
 
+local function layoutNotifications(window)
+	local width = math.max(64, math.min(280, window.viewport.AbsoluteSize.X - 28))
+	window.toastStack.Size = UDim2.fromOffset(width, 0)
+	local offset = 0
+	for index = #window.notifications, 1, -1 do
+		local notice = window.notifications[index]
+		notice:resize(width)
+		animate(window, notice.shell, { Position = UDim2.new(1, 0, 0, -offset) }, 0.16)
+		offset = offset + notice.shell.Size.Y.Offset + 8
+	end
+	if #window.notifications > 1 and offset > window.viewport.AbsoluteSize.Y - 28 then
+		window.notifications[1]:dismiss(true)
+	end
+end
+
+local function createNotificationView(window, options)
+	local shell, panel = overlayCard(window, window.toastStack, "Notification", UDim2.fromOffset(280, 74))
+	shell.AnchorPoint = Vector2.new(1, 1)
+	shell.Position = UDim2.new(1, 24, 0, 0)
+	local icon = createIcon(window, panel, options.icon or "bell", 16)
+	icon.Position, icon.ImageColor3 = UDim2.fromOffset(10, 10), window.theme.accent
+	label(window, panel, limitText(options.title or "Underlord", 64), {
+		Position = UDim2.fromOffset(34, 8), Size = UDim2.new(1, -66, 0, 20), TextSize = 13,
+	})
+	local content = label(window, panel, limitText(options.content or "", 320), {
+		Position = UDim2.fromOffset(10, 33), Size = UDim2.new(1, -20, 0, 30), TextSize = 12,
+		TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, TextColor3 = window.theme.muted,
+	})
+	local close = button(window, panel, "", {
+		Name = "Dismiss", Position = UDim2.new(1, -27, 0, 7), Size = UDim2.fromOffset(20, 20),
+	})
+	local closeIcon = createIcon(window, close, "x", 12)
+	closeIcon.Position = UDim2.fromOffset(4, 4)
+	local progress = frame(panel, "Lifetime", { Position = UDim2.new(0, 0, 1, -2), Size = UDim2.new(1, 0, 0, 2),
+		BackgroundTransparency = 0, BackgroundColor3 = window.theme.accent })
+	return { shell = shell, panel = panel, content = content, close = close, closeIcon = closeIcon, progress = progress }
+end
+
+local function notificationHandle(window, view)
+	local handle = { isDismissed = false, shell = view.shell, connections = {} }
+	function handle:resize(width)
+		local height = measureText(window, view.content.Text, width - 20, 64)
+		view.content.Size = UDim2.new(1, -20, 0, height)
+		view.shell.Size = UDim2.fromOffset(width, height + 45)
+	end
+	function handle:dismiss(shouldHideImmediately)
+		if self.isDismissed or window.isDestroyed then return end
+		self.isDismissed = true
+		cancelScheduled(window, self.timer)
+		releaseConnections(window, self.connections)
+		local index = table.find(window.notifications, self)
+		if index then table.remove(window.notifications, index) end
+		if shouldHideImmediately then
+			destroyOverlay(window, view.shell)
+		else
+			animate(window, view.panel, { GroupTransparency = 1 }, 0.14)
+			animate(window, view.shell, { Position = UDim2.new(1, 24, 0, view.shell.Position.Y.Offset) }, 0.14)
+			schedule(window, 0.14, function() destroyOverlay(window, view.shell) end)
+		end
+		layoutNotifications(window)
+	end
+	table.insert(handle.connections, connect(window, view.close.Activated, function() handle:dismiss() end))
+	table.insert(handle.connections, connect(window, view.close.MouseEnter, function()
+		animate(window, view.closeIcon, { ImageColor3 = window.theme.accent })
+	end))
+	table.insert(handle.connections, connect(window, view.close.MouseLeave, function()
+		animate(window, view.closeIcon, { ImageColor3 = window.theme.text })
+	end))
+	return handle
+end
+
 Window.notify = function(self, options)
-	local window = self
 	options = options or {}
 	if self.isDestroyed then return end
 	if not self.toastStack then
-		self.toastStack = frame(self.viewport, "Notifications", { AnchorPoint = Vector2.new(1, 0),
-			Position = UDim2.new(1, -16, 0, 16), Size = UDim2.fromOffset(280, 500), ZIndex = 200 })
-		create("UIListLayout", self.toastStack, { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder })
+		self.toastStack = frame(self.viewport, "Notifications", { AnchorPoint = Vector2.new(1, 1),
+			Position = UDim2.new(1, -14, 1, -14), Size = UDim2.fromOffset(280, 0), ZIndex = 350 })
+		connect(self, self.viewport:GetPropertyChangedSignal("AbsoluteSize"), function() layoutNotifications(self) end)
 	end
-	if #self.notifications >= 4 then self.notifications[1]:dismiss() end
-	local toast = create("CanvasGroup", self.toastStack, { Name = "Notification", Size = UDim2.new(1, 0, 0, 70),
-		BackgroundColor3 = self.theme.panel, BorderSizePixel = 0, GroupTransparency = 1 })
-	outline(toast, self.theme.outline)
-	local icon = createIcon(self, toast, options.icon or "info", 18)
-	icon.Position, icon.ImageColor3 = UDim2.fromOffset(10, 12), self.theme.accent
-	label(self, toast, options.title or "Underlord", { Position = UDim2.fromOffset(36, 7), Size = UDim2.new(1, -44, 0, 22) })
-	label(self, toast, options.content or "", { Position = UDim2.fromOffset(10, 31), Size = UDim2.new(1, -20, 0, 32),
-		TextSize = 12, TextWrapped = true, TextColor3 = self.theme.muted })
-	local handle = { isDismissed = false }
-	function handle:dismiss()
-		if self.isDismissed or window.isDestroyed then return end
-		self.isDismissed = true
-		local index = table.find(window.notifications, self)
-		if index then table.remove(window.notifications, index) end
-		animate(window, toast, { GroupTransparency = 1 })
-		schedule(window, window.theme.hoverDuration, function() toast:Destroy() end)
-	end
+	if #self.notifications >= 3 then self.notifications[1]:dismiss(true) end
+	local duration = tonumber(options.duration) or 4
+	if duration ~= duration then duration = 4 end
+	duration = math.clamp(duration, 1, 15)
+	local view = createNotificationView(self, options)
+	local handle = notificationHandle(self, view)
 	table.insert(self.notifications, handle)
-	animate(self, toast, { GroupTransparency = 0 })
-	schedule(self, options.duration or 4, function() handle:dismiss() end)
+	layoutNotifications(self)
+	animate(self, view.panel, { GroupTransparency = 0 }, 0.16)
+	animate(self, view.progress, { Size = UDim2.fromOffset(0, 2) }, duration, Enum.EasingStyle.Linear)
+	handle.timer = schedule(self, duration, function() handle.timer = nil; handle:dismiss() end)
 	return handle
 end
 
@@ -1467,6 +1615,7 @@ Tab.setName = function(self, name)
 end
 
 Section.setVisible = function(self, isVisible)
+	if self.window.hideTooltip then self.window.hideTooltip() end
 	local popup = self.window.activePopup
 	if not isVisible and popup and popup.control:IsDescendantOf(self.frame) then closePopup(self.window, true) end
 	self.frame.Visible = isVisible == true
